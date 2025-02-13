@@ -1,0 +1,134 @@
+import pandas as pd
+import numpy as np
+ 
+#Archivos
+
+#rutas de archivos
+ruta_Data = 'Acumulado_Data.xlsx'
+ruta_rep09_AY = 'REP_09_Acumulado_2025.xlsx'
+ruta_final_de_comisiones_AY = 'Final de comisiones con Indirectas 2025.xlsx'
+ruta_final_de_comisiones_LY = 'Final de comisiones con Indirectas 2025.xlsx'
+ruta_listado_HSK ='Listado HSK 2025 Total.xlsx'
+#lectura de archivos
+Data = pd.read_excel(ruta_Data, sheet_name='Data')
+Bajas_Acumulado = pd.read_excel(ruta_Data,sheet_name='Bajas')
+OP_Acumulado = pd.read_excel(ruta_rep09_AY)
+Hoja_TGT = pd.read_excel(ruta_listado_HSK, sheet_name='HSK')
+Final_de_Comisiones_Actual = pd.read_excel(ruta_final_de_comisiones_AY)
+Final_de_Comisiones_LY  = pd.read_excel(ruta_final_de_comisiones_LY)
+
+#Concateno el archivo actual de comisiones con los años anteriores para comparativas
+Final_de_comisiones = pd.concat([Final_de_Comisiones_Actual, Final_de_Comisiones_LY], ignore_index=True)
+
+#Hoja OP
+# Porcentaje de Costo cerveza
+costo_cerveza = 0.62 
+ 
+#Agregar columnas
+OP_Acumulado['% Comisión'] = np.where(
+    (OP_Acumulado['Comisión (Cerveza)'] == 0) | (OP_Acumulado['Ingreso Cerveza'] == 0), 
+    0, 
+    OP_Acumulado['Comisión (Cerveza)'] / OP_Acumulado['Ingreso Cerveza']
+)
+OP_Acumulado['Costo cerveza'] = OP_Acumulado['Ingreso Cerveza'] * costo_cerveza
+OP_Acumulado['GP Beer'] = OP_Acumulado['Ingreso Cerveza'] + OP_Acumulado['Comisión (Cerveza)'] - OP_Acumulado['Costo cerveza']
+OP_Acumulado['GP Cerveza'] = np.where(
+    (OP_Acumulado['GP Beer'] == 0) | (OP_Acumulado['Ingreso Cerveza'] == 0), 
+    0, 
+    OP_Acumulado['GP Beer'] / OP_Acumulado['Ingreso Cerveza']
+)
+OP_Acumulado['Costo HTL'] = np.where(
+    (OP_Acumulado['GP Beer'] == 0) | (OP_Acumulado['Volumen Sell Out (Hlts)'] == 0), 
+    0, 
+    OP_Acumulado['GP Beer'] / OP_Acumulado['Volumen Sell Out (Hlts)']
+)
+
+ 
+#Hoja Data, del excel de HSK
+#aca inician las 40 columnas de la hoja 
+
+# Función para verificar si existe una coincidencia en Bajas_Acumulado
+def status_comision_mes(row):
+    match = (
+        (Final_de_comisiones['NoDEPROVEEDOR'] == row['# SK']) &
+        (Final_de_comisiones['Mes_x'] == row['Mes']) &
+        (Final_de_comisiones['Año_Comision'] == row['Año'])
+    )
+
+    if match.any():
+        status_values = Final_de_comisiones.loc[match, 'STATUS'].values
+        return status_values[0] if len(status_values) > 0 else 'NA'  # Evitar IndexError
+    
+    return 'NA'
+
+# Aplicar la función fila por fila
+Data['Status Comision'] = Data.apply(status_comision_mes, axis=1)
+
+def ocupacion_comision_mes(row):
+    match = (
+        (Final_de_comisiones['NoDEPROVEEDOR'] == row['# SK']) &
+        (Final_de_comisiones['Mes_x'] == row['Mes']) &
+        (Final_de_comisiones['Año_Comision'] == row['Año'])
+    )
+
+    if match.any():
+        ocupacion_values = Final_de_comisiones.loc[match, 'OCUPACIÓN'].values
+        return ocupacion_values[0] if len(ocupacion_values) > 0 else 'NA'  # Evitar IndexError
+    
+    return 'NA'
+
+# Aplicar la función fila por fila
+Data['Ocupacion Comision'] = Data.apply(ocupacion_comision_mes, axis=1)
+
+# Filtro base
+filtro_comerciante_activo_y_total = (
+    (Data['Status Comision'] == "Activos") & 
+    (Data['Ocupacion Comision'] == "TOTAL") & 
+    (Data['# SK'] != 0) & 
+    (Data['# SK'] != 'VACANTE')
+)
+# Promedio EBIT con condiciones
+ebit_promedio = OP_Acumulado.groupby(['CECO', 'MES COM OP', 'Año'])['EBIT'].transform('mean')
+
+# Asignar valores según el filtro_comerciante_activo_y_total
+Data['Resultado'] = 0  # Default en caso de que no se cumplan condiciones
+Data.loc[filtro_comerciante_activo_y_total, 'Resultado'] = Data.loc[filtro_comerciante_activo_y_total].apply(
+    lambda row: ebit_promedio.get((row['CeCo'], row['MES'], row['Año']), 0), axis=1
+)
+# Rellenar posibles NaN con 0
+Data['Resultado'] = Data['Resultado'].fillna(0)
+
+
+
+
+
+
+
+
+
+
+
+#hoja tgts
+# Crear una copia de Hoja_TGT para no modificar el original
+Hoja_TGT_Rotación_2025 = Hoja_TGT.copy()
+
+# Crear las columnas del 1 al 12 en Hoja_TGT_Rotación_2025 e inicializarlas en 0
+for mes in range(1, 13):
+    Hoja_TGT_Rotación_2025[mes] = 0
+
+# Llenar la tabla con los conteos filtrados
+for i, row in Hoja_TGT_Rotación_2025.iterrows():
+    ceco = row['CeCo']
+    for mes in range(1, 13):
+        Año = 2025
+        Hoja_TGT_Rotación_2025.at[i, mes] = Bajas_Acumulado[
+            (Bajas_Acumulado['NUMERO DE NEGOCIO'] == ceco) &
+            (Bajas_Acumulado['Mes'] == mes) &
+            (Bajas_Acumulado['Año'] == Año)
+        ].shape[0]  # Cuenta el número de filas que cumplen con los filtros
+
+# Agregar la columna de Año
+Hoja_TGT_Rotación_2025['Año'] = 2025
+
+# Ver resultado
+print(Hoja_TGT_Rotación_2025)
