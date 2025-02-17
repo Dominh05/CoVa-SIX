@@ -1,0 +1,31 @@
+import pandas as pd
+import os
+
+# Ruta donde se encuentran los archivos Excel
+ruta = r'C:\Users\dominh05\Documents\SIX\Concatenador supremo\Exceles'
+
+# Lista para almacenar los DataFrames de cada archivo
+lista_df = []
+
+# Iterar sobre todos los archivos en la ruta
+for archivo in os.listdir(ruta):
+    if archivo.endswith('.xlsx'):
+        # Construir la ruta completa del archivo
+        ruta_archivo = os.path.join(ruta, archivo)
+        
+        # Leer el archivo Excel
+        df = pd.read_excel(ruta_archivo)
+        
+        # Crear una columna con el nombre del archivo
+        df['Nombre_Archivo'] = archivo
+        
+        # Añadir el DataFrame a la lista
+        lista_df.append(df)
+
+# Concatenar todos los DataFrames en uno solo
+df_concatenado = pd.concat(lista_df, ignore_index=True)
+
+# Guardar el DataFrame concatenado en un archivo Excel
+df_concatenado.to_excel('Concatenado.xlsx', index=False)
+
+print("Concatenación completada y guardada")
