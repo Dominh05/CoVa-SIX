@@ -1,0 +1,29 @@
+import os
+import pandas as pd
+from datetime import datetime
+
+folder_path = r'C:\Users\dominh05\Documents\Planta nomina mix 2024'
+
+df_list = []
+
+for filename in os.listdir(folder_path):
+    if filename.endswith('.xlsx'):
+        print(filename)
+        filepath = os.path.join(folder_path, filename)
+        print(f'Reading {filepath}...')
+        
+        # Lee el archivo Excel
+        df = pd.read_excel(filepath)
+        df['source_file'] = filename
+        df_list.append(df)
+
+combined_df = pd.concat(df_list)
+
+# Obtener la fecha actual en formato 'YYYY-MM-DD'
+fecha_actual = datetime.now().strftime('%Y-%m-%d')
+
+# Nombre del archivo de salida con la fecha actual
+output_filename = f'Concatenado_Planta_Nomina_Mix{fecha_actual}.xlsx'
+
+# Guardar el DataFrame combinado en un archivo Excel
+combined_df.to_excel(output_filename, index=False) 
