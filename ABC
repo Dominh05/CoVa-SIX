@@ -1,0 +1,72 @@
+import pandas as pd
+
+# Define la ruta del archivo y el nombre de la hoja
+ruta_archivo = r"C:\Users\dominh05\Documents\SIX\ABC\Formato Reporte Cierre ABC.xlsx"
+
+# Cargar el archivo con Pandas para análisis de datos
+df = pd.read_excel(ruta_archivo)
+
+df_directos = df[df['TIPO SIX'] == 'DIRECTO']
+
+# Crear un diccionario para almacenar las pivots
+dfs_pivot = {}
+# Iterar sobre los valores únicos de la columna 'Archivo'
+for archivo in df_directos['Archivo'].unique():
+    df_archivo = df_directos[df_directos['Archivo'] == archivo]
+    # Iterar sobre las regiones dentro de cada archivo
+    for region in df_archivo['REGION'].unique():
+        # Filtrar el DataFrame por cada región
+        df_region = df_archivo[df_archivo['REGION'] == region]
+        # Crear la tabla dinámica con 'Color de Fila' y 'TIPO DE ALTAREGION'
+        pivot = pd.pivot_table(df_region, 
+                               index='REGION', 
+                               columns=['Color de Fila', 'TIPO DE ALTA'],  # Agrupar por ambos
+                               aggfunc='size', 
+                               fill_value=0)        
+        # Guardar la tabla dinámica en el diccionario con el nombre adecuado
+        # El nombre de la clave será una combinación de archivo y región
+        nombre_tabla = f"{archivo}_{region}"
+        dfs_pivot[nombre_tabla] = pivot
+
+# Exportar todas las pivots a un archivo Excel
+with pd.ExcelWriter(r"C:\Users\dominh05\Documents\SIX\ABC\Pivots_por_region.xlsx") as writer:
+    for nombre_tabla, pivot in dfs_pivot.items():
+        pivot.to_excel(writer, sheet_name=nombre_tabla)
+
+# bajas
+df = pd.read_excel(ruta_archivo, sheet_name='B. Bajas')
+
+df_bajas = df[~df['CAUSA DE BAJA'].isin([
+    'CIERRE_DEFINITIVO_DE_NEGOCIO',
+    'Cambio de negocio entre familiares directos',
+    'VBO_CAMBIO_ENTRE_FAMILIARES_DIRECTOS'
+])]
+
+
+# Crear un diccionario para almacenar las pivots
+dfs_pivot = {}
+# Iterar sobre los valores únicos de la columna 'Archivo'
+
+for archivo in df_bajas['Archivo'].unique():
+    df_archivo = df_bajas[df_bajas['Archivo'] == archivo]
+    # Iterar sobre las regiones dentro de cada archivo
+    for region in df_archivo['REGION'].unique():
+        # Filtrar el DataFrame por cada región
+        df_region = df_archivo[df_archivo['REGION'] == region]
+        # Crear la tabla dinámica con 'Color de Fila' y 'TIPO DE ALTAREGION'
+        pivot = pd.pivot_table(df_region, 
+                               index='REGION', 
+                               columns=['Color de Fila'],  # Agrupar por ambos
+                               aggfunc='size', 
+                               fill_value=0)        
+        # Guardar la tabla dinámica en el diccionario con el nombre adecuado
+        # El nombre de la clave será una combinación de archivo y región
+        nombre_tabla = f"{archivo}_{region}"
+        dfs_pivot[nombre_tabla] = pivot
+
+# Exportar todas las pivots a un archivo Excel
+with pd.ExcelWriter(r"C:\Users\dominh05\Documents\SIX\ABC\Pivots_por_region_BAJAS.xlsx") as writer:
+    for nombre_tabla, pivot in dfs_pivot.items():
+        pivot.to_excel(writer, sheet_name=nombre_tabla)
+
+print("Las tablas dinámicas han sido exportadas exitosamente.")
