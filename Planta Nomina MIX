@@ -1,0 +1,61 @@
+import pandas as pd
+Planta_Nominas = pd.read_excel('31 de enero.xlsx')
+#quita inactivos, jubilados y posiciones 999999
+Planta_Nominas = Planta_Nominas[(Planta_Nominas['Status ocupación'] != 'Dado de baja') & (Planta_Nominas['Status ocupación'] != 'Pensionista') & (Planta_Nominas['Posición'] != 99999999)]
+#Sueldos fijos, multiplica sueldo sind x 30
+Sueldo_fijo = Planta_Nominas[(Planta_Nominas['CC-nómina.1'] == 'Sueldo Ordinario Empleado') | (Planta_Nominas['CC-nómina.1'] == 'Sueldo Ordinario Sindical') | (Planta_Nominas['CC-nómina.1'] == 'Sueldo catorcenal Emplead') | (Planta_Nominas['CC-nómina.1'] == 'Sueldo catorcenal Sindica')] 
+Sueldo_fijo.loc[(Sueldo_fijo['CC-nómina.1'] == 'Sueldo Ordinario Sindical') | (Sueldo_fijo['CC-nómina.1'] == 'Sueldo catorcenal Sindica'), 'Sueldo diario/mensual'] *= 30
+Sueldo_fijo_duplicados = Sueldo_fijo[Sueldo_fijo.duplicated()]
+#Sueldo_fijo_duplicados.to_excel('duplicados.xlsx')
+Sueldo_fijo = Sueldo_fijo.drop_duplicates()
+#Lo mismo para la BV
+Salario_de_Variable = Planta_Nominas[(Planta_Nominas['CC-nómina.1'] == 'Base Variable') | (Planta_Nominas['CC-nómina.1'] == 'Base Variable Diaria')] 
+Salario_de_Variable .loc[Salario_de_Variable ['CC-nómina.1'] == 'Base Variable Diaria', 'Sueldo diario/mensual'] *= 30
+#Comisiones
+Salario_de_Comisión = Planta_Nominas[(Planta_Nominas['CC-nómina.1'] == 'Comision Fija Empleado') | (Planta_Nominas['CC-nómina.1'] == 'Comisión Fija Sindicaliza') | (Planta_Nominas['CC-nómina.1'] == 'Comision Garantia')] 
+Salario_de_Comisión .loc[Salario_de_Comisión['CC-nómina.1'] == 'Comisión Fija Sindicaliza', 'Sueldo diario/mensual'] *= 30
+Salario_de_Comisión.loc[(Planta_Nominas['CC-nómina.1'] == 'Comision Garantia') & Salario_de_Comisión['Descripción Área de personal'].str.startswith('Sindi'), 'Sueldo diario/mensual'] *= 30
+# Obtener los valores únicos de la columna 'Salario_de_Comisión[Nº pers.]'
+comision_unique = Salario_de_Comisión['Nº pers.'].unique()
+# Obtener los valores únicos de la columna 'Salario_de_Variable[Nº pers.]'
+variable_unique = Salario_de_Variable['Nº pers.'].unique()
+# Combinar los valores únicos en una lista
+lista_unicos = list(set().union(comision_unique, variable_unique))
+#En la parte de salarios, le quito los que no estan en la lista
+sueldo_fijo_filtrado = Sueldo_fijo[Sueldo_fijo['Nº pers.'].isin(lista_unicos)]
+merged_df = pd.merge(sueldo_fijo_filtrado[['Nº pers.', 'Nombre de personal' , 'Sueldo diario/mensual', 'Posición.1', 'Ce.coste', 'SDvPer.']],
+                     Salario_de_Variable[['Nº pers.', 'Sueldo diario/mensual']],
+                     on='Nº pers.',
+                     how='outer',
+                     suffixes=('_sueldo_fijo', '_salario_variable'))
+merged_df = pd.merge(merged_df,
+                     Salario_de_Comisión[['Nº pers.', 'Sueldo diario/mensual']],
+                     on='Nº pers.',
+                     how='outer')
+merged_df = merged_df.fillna(0)
+merged_df = merged_df.rename(columns={'Sueldo diario/mensual_sueldo_fijo': 'Sueldo Mensual', 'Sueldo diario/mensual_salario_variable': 'Base Variable', 'Sueldo diario/mensual': 'Comisión Fija'})
+merged_df['Salario Total'] = (merged_df['Sueldo Mensual'] + merged_df['Base Variable'] + merged_df['Comisión Fija']).round(2)
+merged_df['Ponderación Sueldo'] = merged_df['Sueldo Mensual'] / merged_df['Salario Total']
+merged_df['Ponderación Base Variable'] = merged_df['Base Variable'] / merged_df['Salario Total']
+merged_df['Ponderación Comisión'] = merged_df['Comisión Fija'] / merged_df['Salario Total']
+merged_df['Validación'] = merged_df['Ponderación Sueldo'] + merged_df['Ponderación Base Variable'] + merged_df['Ponderación Comisión']
+merged_df['Validación'] = merged_df['Validación'].astype(float)
+merged_df['Validación'] = merged_df['Validación'].round(3)
+merged_df['Budget'] = merged_df['Salario Total'] * 0.3
+merged_df['Dif'] = merged_df['Budget'] - (merged_df['Base Variable'] + merged_df['Comisión Fija'])
+New_order = ['Nº pers.', 'Nombre de personal', 'Salario Total', 'Sueldo Mensual', 'Base Variable', 'Comisión Fija', 'Ponderación Sueldo', 'Ponderación Base Variable', 'Ponderación Comisión', 'Posición.1', 'Budget', 'Dif','Ce.coste','Validación', 'SDvPer.']
+merged_df = merged_df[New_order]
+#Formato a las celdas de ponderación
+merged_df['Ponderación Sueldo'] = merged_df['Ponderación Sueldo'].round(1)
+merged_df['Ponderación Base Variable'] = merged_df['Ponderación Base Variable'].round(1)
+merged_df['Ponderación Comisión'] = merged_df['Ponderación Comisión'].round(1)
+merged_df = merged_df.drop_duplicates()
+merged_df.to_excel('Planta Nomina Trabajado hoysix.xlsx', index =False)
+#Validación
+if merged_df['Validación'].mean() != 1:
+    Socios_Con_Detalles = merged_df['Validación'] != 1
+    Lista_SCD = Socios_Con_Detalles['Nº pers.'].unique()
+    Reporte_SCD = Planta_Nominas[Planta_Nominas['Nº pers.'].isin(Lista_SCD)]
+    Reporte_SCD.to_excel('Socios con detalles.xlsx')
+else:
+    print('Terminado')
