@@ -1,0 +1,935 @@
+import pandas as pd
+import time
+import pygame
+import os
+import numpy as np
+
+#opcional: Requiere actualizar el consolidado sa123 para calcular si aplica pago por POS
+
+#Codigo que calcula el subsidio que pagariamos en base al monto garantizado correspondiente en relación a los meses que tiene la tienda operando
+# Inicio de medición
+start_time = time.time()
+print(start_time)
+# Cargar el DataFrame
+año_a_evaluar = 2023
+
+#este es con las indirectas a mes pago vencido, ej enero pago febrero
+base_comisiones = pd.read_excel(r'C:\Users\dominh05\Documents\SIX\Codigos_six\Comisiones\Bases Fregonas\Final_de_comisiones_2023.xlsx')
+
+#Consolidado de los sa123
+ruta_sa123= r'C:\Users\dominh05\Documents\SIX\Codigos_six\Comisiones\consolidado sa123 2024.xlsx'
+ruta_tabla_htl = r'C:\Users\dominh05\Documents\SIX\Tabulador HTL y porcentaje de comision.xlsx'
+
+#porcentaje de contrato y de hsk
+porcentaje_de_contrato = pd.read_excel(r'C:\Users\dominh05\Documents\SIX\HSK\Tabulador Ene - Jun_2025 - Ene_OK.xlsx')
+porcentaje_de_hsk = pd.read_excel(r'C:\Users\dominh05\Documents\SIX\Tabulador HSK comision\TABULADOR HSK - COMISIÓN ENERO 2025.xlsx', sheet_name='TGT HSK')
+sa039 = pd.read_excel(r'C:\Users\dominh05\Documents\SIX\Data Financiera SA039 Acumulado.xlsx', sheet_name='SA039')
+diccionario_datos_finanzas = dict(zip(sa039['Llave'], sa039['Monto']))
+#diccionario de comisiones
+diccionario_porcentaje_contrato = dict(zip(porcentaje_de_contrato['No.deNegocio'], porcentaje_de_contrato['Tabulador Enero 2025']))
+diccionario_porcentaje_HSK = dict(zip(porcentaje_de_hsk['CeCo'], porcentaje_de_hsk['CV HSK']))
+
+base_comisiones['Cumple_Condiciones_Tienda_Activa'] = (
+    ((base_comisiones['STATUS'] == 'ACTIVOS') | (base_comisiones['STATUS'] == 'ALTA')) & 
+    (base_comisiones['MODALIDAD'] != 'PENSION') & 
+    (base_comisiones['SIX'] != 'INDIRECTO') & 
+    (base_comisiones['OCUPACIÓN'] == 'TOTAL') & 
+    (base_comisiones['DIAS LABORADOS'] >= 28)
+)
+base_comisiones = base_comisiones[
+    ((base_comisiones['STATUS'] == 'ACTIVOS') | (base_comisiones['STATUS'] == 'ALTA')) & 
+    (base_comisiones['MODALIDAD'] != 'PENSION') & 
+    (base_comisiones['SIX'] != 'INDIRECTO') & 
+    (base_comisiones['OCUPACIÓN'] == 'TOTAL') & 
+    (base_comisiones['DIAS LABORADOS'] >= 28)
+].copy()
+
+#aqui quito el IVA de la ecuación
+base_comisiones['Total Income'] = base_comisiones['Total Income'] - base_comisiones['IVA']
+base_comisiones['Total_Income_Full'] = base_comisiones['Total Income'] *1.2
+# Paso 1: Crear la columna 'Conteo acumulado mes'
+base_comisiones['Conteo acumulado mes'] = base_comisiones.groupby(['No.SAPDENEGOCIO','NoDEPROVEEDOR']).cumcount() + 1
+# Paso 2: Crear la columna 'MOPS' con el valor máximo de 'Conteo acumulado mes' para cada 'No.SAPDENEGOCIO'
+base_comisiones['Meses_YTD'] = base_comisiones.groupby(['No.SAPDENEGOCIO','NoDEPROVEEDOR'])['Conteo acumulado mes'].transform('max')
+
+tabla_hectolitraje = pd.read_excel(ruta_tabla_htl)
+
+# Paso 3: Crear la columna 'Garantizado monto'
+def calcular_garantizado(cantidad_meses, htl,region):
+    #Nuevo ingreso
+    if cantidad_meses < 3 and htl <11:
+        return 15000
+    #Tabla Strong Hold
+    elif region in ['NOROESTE', 'NORESTE', 'SURESTE'] and cantidad_meses >=3 and cantidad_meses <12 and htl <1.5:
+        return 0
+    elif region in ['NOROESTE', 'NORESTE', 'SURESTE'] and cantidad_meses >=3 and cantidad_meses <12 and htl >=1.5 and htl <=5:
+        return 9000
+    elif region in ['NOROESTE', 'NORESTE', 'SURESTE'] and cantidad_meses >=3 and cantidad_meses <12 and htl >5 and htl <=8:
+        return 12000
+    elif region in ['NOROESTE', 'NORESTE', 'SURESTE'] and cantidad_meses >=3 and cantidad_meses <12 and htl >8 and htl <=11:
+        return 15000
+    elif region in ['OCCIDENTE', 'CENTRO'] and cantidad_meses >=3 and cantidad_meses <12 and htl <1:
+        return 0
+    elif region in ['OCCIDENTE', 'CENTRO'] and cantidad_meses >=3 and cantidad_meses <12 and htl >=1 and htl <=3:
+        return 9000
+    elif region in ['OCCIDENTE', 'CENTRO'] and cantidad_meses >=3 and cantidad_meses <12 and htl >3 and htl <=6:
+        return 12000
+    elif region in ['OCCIDENTE', 'CENTRO'] and cantidad_meses >=3 and cantidad_meses <12 and htl >6 and htl <=11:
+        return 15000
+    else:
+        return 0
+    
+base_comisiones['Garantizado monto'] = base_comisiones.apply(
+    lambda row: calcular_garantizado(row['Conteo acumulado mes'], row['HTL'],row['REGION']),
+    axis=1
+)
+
+def calcular_grupo_de_subsidio(cantidad_meses, htl, region):
+    # Nuevo ingreso (< 3 meses)
+    if cantidad_meses < 3 and htl < 11:
+        return 'Garantizado menor a 3 meses de antigüedad'
+
+    # Stronghold (NOROESTE, NORESTE, SURESTE)
+    if region in ['NOROESTE', 'NORESTE', 'SURESTE']:
+        if 3 <= cantidad_meses < 12:
+            if htl < 1.5:
+                return 'No subsidiado'
+            elif 1.5 <= htl <= 5:
+                return 'Subsidiado Stronghold 3 a 12 meses >=1.5 htl <=5'
+            elif 5 < htl <= 8:
+                return 'Subsidiado Stronghold 3 a 12 meses >5 htl <=8'
+            elif 8 < htl <= 11:
+                return 'Subsidiado Stronghold 3 a 12 meses >8 htl <=11'
+
+    # Otras regiones (OCCIDENTE, CENTRO)
+    elif region in ['OCCIDENTE', 'CENTRO']:
+        if 3 <= cantidad_meses < 12:
+            if htl < 1:
+                return 'No subsidiado'
+            elif 1 <= htl <= 3:
+                return 'Subsidiado Challenger 3 a 12 meses >=1 htl <=3'
+            elif 3 < htl <= 6:
+                return 'Subsidiado Challenger 3 a 12 meses >3 htl <=6'
+            elif 6 < htl <= 11:
+                return 'Subsidiado Challenger 3 a 12 meses >6 htl <=11'
+
+    return 'Validar'  # Caso no cubierto
+
+# Aplicar la función al DataFrame
+base_comisiones['Grupo_De_Subsidio_Mes'] = base_comisiones.apply(
+    lambda row: calcular_grupo_de_subsidio(row['Conteo acumulado mes'], row['HTL'], row['REGION']),
+    axis=1
+)
+
+base_comisiones['Total Income sin subsidio'] = base_comisiones['Total Income']-base_comisiones['GARANTIAS (G)'] 
+
+# Paso 4: Calcular subsidio
+def calcular_subsidio(row):
+    """
+    Calcula el subsidio basado en las reglas de Total Income, Garantizado monto, y Meses.
+    """
+    # Si ya tiene salario digno
+    if row['Total Income sin subsidio'] >= 15000:
+        return 0
+    # Si no tuvo ganancia
+    elif pd.isna(row['Total Income sin subsidio']) or row['Total Income sin subsidio'] == 0:
+        return row['Garantizado monto']
+    # Calcular subsidio según cuantos meses lleva operando en el año la tienda
+    Garantia_max = row['Garantizado monto']
+    if row['Conteo acumulado mes'] < 3:
+        return max(0, Garantia_max - row['Total Income sin subsidio'])
+    elif row['Conteo acumulado mes'] < 6:
+        return max(0, Garantia_max - row['Total Income sin subsidio'])
+    elif row['Conteo acumulado mes'] < 9:
+        return max(0, Garantia_max - row['Total Income sin subsidio'])
+    elif row['Conteo acumulado mes'] >= 9:
+        return max(0, Garantia_max - row['Total Income sin subsidio'])
+    else:
+        return 'validar'
+
+# Aplicar la función al DataFrame
+base_comisiones['Subsidios'] = base_comisiones.apply(calcular_subsidio, axis=1)
+
+sa123 = pd.read_excel(ruta_sa123)
+#cargar los resultados de uso de POS del SA123
+
+encabezados = [
+    "Cerveza",
+    "Cigarros",
+    "RTDs",
+    "Spirits",
+    "Rehidratantes",
+    "Bebidas",
+    "Botanas",
+    "Helados",
+    "Abarrotes",
+    "Lácteos",
+    "Pan y Galletas",
+    "TAE",
+    "SumaSIX"
+]
+sa123['SUMAOTROS'] = sa123[encabezados].sum(axis=1)
+columnas_clave = [
+    'CECO',
+    'APERTURA',
+    'CIERRE',
+    'SUMAOTROS',
+    'Mes'
+]
+sa123_simplificado = sa123[columnas_clave]
+
+# Crear 'Codigo' concatenando Ceco y Mes para hacer el cruce 
+sa123_simplificado['Codigo'] = sa123_simplificado['CECO'].astype(str) + sa123_simplificado['Mes'].astype(str)
+base_comisiones['Codigo'] = base_comisiones['No.SAPDENEGOCIO'].astype(str) + base_comisiones['Mes'].astype(str)
+
+# Realizar el merge usando los concatenados anteriores
+merged_df = pd.merge(base_comisiones, sa123_simplificado, left_on='Codigo', right_on='Codigo', how='left')
+
+# Redondear los valores y convertir a enteros
+merged_df['APERTURA'] = pd.to_numeric(merged_df['APERTURA'], errors='coerce').fillna(0)
+merged_df['CIERRE'] = pd.to_numeric(merged_df['CIERRE'], errors='coerce').fillna(0)
+merged_df['SUMAOTROS'] = pd.to_numeric(merged_df['SUMAOTROS'], errors='coerce').fillna(0)
+
+merged_df['Aplica_Subsidio_Segun_POS'] = merged_df.apply(
+    lambda row: "Sí" if (row['APERTURA'] == .1 and row['CIERRE'] == .1 and row['SUMAOTROS'] >= .4) else "No",
+    axis=1
+)
+
+# Si hay NaN, rellenar con 0 antes de hacer la suma 
+merged_df['Suma_APERTURA_CIERRE_SUMAOTROS'] = merged_df[['APERTURA', 'CIERRE', 'SUMAOTROS']].fillna(0).sum(axis=1)
+
+merged_df = merged_df.drop(['Mes_y', 'Codigo'], axis=1)
+
+merged_df['HTL'] = merged_df['HTL'].fillna(0)
+
+# Definir los límites de los rangos para HTL
+bins = [0, 1.00000001, 1.50000001, 3.00000001, 5.00000001, 6.00000001, 8.00000001, 10.00000001, 
+        11.00000001, 15.00000001, 20.00000001, 25.00000001, 30.00000001, 40.00000001, 
+        60.00000001, 80.00000001, 100.00000001, float('inf')]
+
+# Etiquetas corregidas para cada rango
+labels = ['0 a 1', '>1 a 1.5', '>1.5 a 3', '>3 a 5', '>5 a 6', '>6 a 8', '>8 a 10', 
+          '>10 a 11', '>11 a 15', '>15 a 20', '>20 a 25', '>25 a 30', '>30 a 40', 
+          '>40 a 60', '>60 a 80', '>80 a 100', '>100']
+
+
+# Crear la nueva columna 'Grupo HTL' con los rangos correspondientes
+merged_df['Grupo_HTL_Mes'] = pd.cut(merged_df['HTL'], bins=bins, labels=labels, right=False)
+
+# Crear la columna con el promedio acumulado de HTL dentro de cada grupo# Calcula el promedio de 'HTL' en todo el archivo para cada grupo de 'No.SAPDENEGOCIO' y 'NoDEPROVEEDOR'
+merged_df['HTL_Promedio_YTD'] = merged_df.groupby('No.SAPDENEGOCIO')['HTL'].transform('mean')
+# Definir los límites de los rangos para HTL
+bins = [0, 1.00000001, 1.50000001, 3.00000001, 5.00000001, 6.00000001, 8.00000001, 10.00000001, 
+        11.00000001, 15.00000001, 20.00000001, 25.00000001, 30.00000001, 40.00000001, 
+        60.00000001, 80.00000001, 100.00000001, float('inf')]
+
+# Etiquetas corregidas para cada rango
+labels = ['0 a 1', '>1 a 1.5', '>1.5 a 3', '>3 a 5', '>5 a 6', '>6 a 8', '>8 a 10', 
+          '>10 a 11', '>11 a 15', '>15 a 20', '>20 a 25', '>25 a 30', '>30 a 40', 
+          '>40 a 60', '>60 a 80', '>80 a 100', '>100']
+
+# Crear la nueva columna 'Grupo HTL' con los rangos correspondientes
+merged_df['Grupo_HTL_YTD'] = pd.cut(merged_df['HTL_Promedio_YTD'], bins=bins, labels=labels, right=False)
+
+# Definir los límites de los rangos
+bins_meses = [0, 3, 6, 9, 12]
+
+# Etiquetas para cada rango
+labels_meses = ['< 3', '4 a <=6', '7 a <=9', '10 a <=12']
+
+# Crear la nueva columna 'Grupo Meses' con los rangos correspondientes, incluyendo el límite superior
+merged_df['Grupo_Meses_YTD'] = pd.cut(merged_df['Meses_YTD'], bins=bins_meses, labels=labels_meses, right=True)
+
+merged_df['Total_Income_Promedio_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Total Income'].transform('mean')
+merged_df['Total_Income_Promedio_YTD_Full'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Total_Income_Full'].transform('mean')
+merged_df['Total_Income_Sin_subsidio_Promedio_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Total Income sin subsidio'].transform('mean')
+
+####falta agregar
+# Extraer los valores únicos de las columnas en las hojas "Tiendas por variabilizar" y "Tiendas por desincorporar"
+tiendas_variabilizar_df = pd.read_excel('Tiendas por variabilizar.xlsx', sheet_name='Tiendas por variabiliza5200')
+tiendas_desincorporar_df = pd.read_excel('Tiendas por variabilizar.xlsx', sheet_name='Tiendas por desincorporar')
+tiendas_hsk_df = pd.read_excel('Tiendas por variabilizar.xlsx', sheet_name='Tiendas HSK')
+
+tiendas_variabilizar = set(tiendas_variabilizar_df.iloc[:, 0].dropna().unique())
+tiendas_desincorporar = set(tiendas_desincorporar_df.iloc[:, 0].dropna().unique())
+tiendas_hsk = set(tiendas_hsk_df.iloc[:, 0].dropna().unique())
+
+# Crear las nuevas columnas en `merged_df` que indiquen si cada tienda está en las listas
+merged_df['En Tiendas por Variabilizar'] = merged_df['No.SAPDENEGOCIO'].apply(lambda x: 1 if x in tiendas_variabilizar else 0)
+merged_df['En Tiendas por Desincorporar'] = merged_df['No.SAPDENEGOCIO'].apply(lambda x: 1 if x in tiendas_desincorporar else 0)
+merged_df['En Tiendas HSK'] = merged_df['No.SAPDENEGOCIO'].apply(lambda x: 1 if x in tiendas_hsk else 0)
+
+
+# Crear la columna condicional
+merged_df['Flag_Total_Income < 15000'] = merged_df['Total Income sin subsidio'].apply(lambda x: 1 if x < 15000 else 0)
+
+# Crear la columna acumulativa que cuenta los 1 en 'Flag_Total_Income < 15000' dentro de cada grupo
+merged_df['Conteo_acumulado_necesidad_de_subsidio'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Flag_Total_Income < 15000'].cumsum()
+
+merged_df['Cantidad_de_necesidad_de_subsidio_YTD'] = merged_df.groupby('No.SAPDENEGOCIO')['Conteo_acumulado_necesidad_de_subsidio'].transform('sum')
+
+merged_df['rango_necesidad_subsidio'] = (
+    merged_df.groupby(['No.SAPDENEGOCIO'])['Flag_Total_Income < 15000']
+    .transform('mean') * 100
+)
+
+# Definir los límites de los rangos
+bins_rangos_de_necesidad_sub = [0, 25, 50,75,95,100]
+
+# Etiquetas para cada rango
+labels_rangos_de_necesidad_sub = ['menor al 25%', 'entre 25 al 50%', 'entre 50 al 75%', 'entre 75 al 95%','100% de las veces necesitan subsidio']
+
+# Crear la nueva columna 'Grupo Meses' con los rangos correspondientes, incluyendo el límite superior
+merged_df['Grupos_rango_necesidad_subsidio'] = pd.cut(merged_df['rango_necesidad_subsidio'], bins=bins_rangos_de_necesidad_sub, labels=labels_rangos_de_necesidad_sub, right=True)
+merged_df['Grupos_rango_necesidad_subsidio'] = merged_df['Grupos_rango_necesidad_subsidio'].astype('object').fillna('No necesita subsidio')
+#mix
+merged_df['Comision_Directa'] = merged_df['PERCEPCION'] 
+
+merged_df['Avg_Comision_Directa_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Comision_Directa'].transform('mean')
+merged_df['Avg_Comision_Indirecta_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Indirectas'].transform('mean')
+
+# Cálculo de MIX_Indirectas_Mes con manejo de división entre 0
+merged_df['MIX_Indirectas_Mes'] = np.where(
+    (merged_df['Indirectas'] == 0) & (merged_df['Total Income'] == 0),
+    0,  # Devuelve 0 si es 0 entre 0
+    merged_df['Indirectas'] / merged_df['Total Income']
+)
+
+# Redondear MIX_Indirectas_Mes a 2 decimales
+merged_df['MIX_Indirectas_Mes'] = merged_df['MIX_Indirectas_Mes'].round(4)
+
+# Cálculo de MIX_Indirectas_YTD como promedio de MIX_Indirectas_Mes
+merged_df['MIX_Indirectas_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['MIX_Indirectas_Mes'].transform('mean')
+
+# Redondear MIX_Indirectas_YTD a 2 decimales
+merged_df['MIX_Indirectas_YTD'] = merged_df['MIX_Indirectas_YTD'].round(4)
+
+# Definir los límites de los rangos
+bins_rangos_de_MIX_Indirectas = [0, 0.10, 0.20, 0.30, 0.40, 0.60, 0.80, 1]
+
+# Etiquetas para cada rango
+labels_rangos_de_MIX_Indirectas = ['menor al 10%', 'entre 10 al 20%', 'entre 20 al 30%', 'entre 30 al 40%', 'entre 40 al 60%', 'entre 60 al 80%', 'entre 80 al 100%']
+
+# Crear la nueva columna 'Grupo Meses' con los rangos correspondientes, incluyendo el límite superior
+merged_df['Grupos_rango_MIX_Indirectas'] = pd.cut(merged_df['MIX_Indirectas_YTD'], bins=bins_rangos_de_MIX_Indirectas, labels=labels_rangos_de_MIX_Indirectas, right=True)
+
+# Calcular el nuevo porcentaje de comisión con redondeo hacia arriba
+merged_df['Nuevo_Porcentaje_Comision_Mes'] = np.where(
+    merged_df['VENTA CERVEZA'] == 0,
+    merged_df['% COMISIÓN CERVEZA'],  # Si la venta de cerveza es 0, se mantiene el porcentaje actual
+    np.ceil((merged_df['Comision_Directa'] + merged_df['Subsidios']) / merged_df['VENTA CERVEZA'] * 100) / 100
+)
+
+#columnas para el desgloce del income
+Columnas_OC_Directas = [
+    "COMPLEMENTO DE COMISION FIJA/VARIABLE",
+    "CIGARROS",
+    "TAE",
+    "PAGO RTD'S",
+    "STRONGBOW",
+    "SPIRITS",
+    "ENERGIZANTES",
+    "SUEROS ORALES",
+    "SIM CARDS",
+    "ENCENDEDORES",
+    "CANIJILLA",
+    "ARTICULOS SIX",
+    "FARMACIA G",
+    "FARMACIA M",
+    "AGUA",
+    "ENERGY DRINKS",
+    "SERVICIOS ELECTRONICOS",
+    'URBANI y VA y VEN'
+]
+merged_df['OC_Directas_Mes'] = merged_df[Columnas_OC_Directas].sum(axis=1)
+
+Columnas_GEC = [
+    "INCENTIVO CATEGORIAS DIRECTAS",
+    "INCENTIVO CATEGORIAS INDIRECTAS"
+]
+
+merged_df['GEC_Mes'] = merged_df[Columnas_GEC].sum(axis=1)
+
+Columnas_Redenciones = [
+    "REDENCIONES LÁCTEOS",
+    "REDENCIONES REFRESCOS",
+    "REDENCIONES SNACK",
+    "REDENCIONES HELADOS",    
+    "REDENCIONES CIGARROS", 
+]
+
+merged_df['Redenciones_Mes'] = merged_df[Columnas_Redenciones].sum(axis=1)
+
+columnas_ayudas_y_bonos = [
+    "BONO DE BIENVENIDA",
+    "BONO CERVEZA",
+    "BONO EJECUCIÓN",
+    "INSTRUCTOR INDIRECTO",
+    "APOYO TEMPORAL COMODIN",
+    "INSTRUCTOR",
+    "CIERRE TEMPORAL",
+    "GENTE COMO TU",
+    "INCENTIVO USO POS",
+    "INCENTIVO GLUP",
+    "APOYOS (VARIOS)",
+    "CONCEPTO APOYO (VARIOS)",
+    "ANTICIPOS"
+]
+# Asegurar que las columnas sean numéricas, reemplazando valores no numéricos con 0
+merged_df[columnas_ayudas_y_bonos] = merged_df[columnas_ayudas_y_bonos].apply(pd.to_numeric, errors='coerce').fillna(0)
+
+# Realizar la suma de las columnas
+merged_df['Ayudas_y_bonos_Mes'] = merged_df[columnas_ayudas_y_bonos].sum(axis=1)
+merged_df['Meses_Acumulado_Tienda_Proveedor_YTD'] = base_comisiones.groupby(['No.SAPDENEGOCIO','NoDEPROVEEDOR'])['Conteo acumulado mes'].transform('max')
+merged_df['Comision_Directa_sin_cerveza'] = merged_df['PERCEPCION'] - merged_df['COMISIÓN CERVEZA']
+
+#columnas agregadas
+
+#asigna stronghold o Challenger
+merged_df['Territorio_Tipo'] = merged_df['REGION'].apply(lambda x: 'Stronghold' if x in ['NORESTE', 'NOROESTE', 'SURESTE'] else 'Challenger')
+merged_df['Com_Cerveza_De_Contrato'] = merged_df['No.SAPDENEGOCIO'].map(diccionario_porcentaje_contrato)
+merged_df['Porcentaje_de_hsk'] = merged_df['No.SAPDENEGOCIO'].map(diccionario_porcentaje_HSK)
+merged_df['Com_Cerveza_de_hsk'] = merged_df['Porcentaje_de_hsk'] * merged_df['VENTA CERVEZA'] 
+merged_df['Beneficio_HSK'] = merged_df['Com_Cerveza_de_hsk'] - merged_df['COMISIÓN CERVEZA']
+
+merged_df['Cumplimiento_Comision_Contrato'] = merged_df['% COMISIÓN CERVEZA'] >= merged_df['Com_Cerveza_De_Contrato']
+
+merged_df['Codigo_registro'] = merged_df['No.SAPDENEGOCIO'].astype(str) + \
+                      merged_df['NoDEPROVEEDOR'].astype(str) + \
+                      merged_df['Mes_x'].astype(str) + \
+                      merged_df['Año_Comision'].astype(str)
+
+merged_df['Codigo_registro_Tienda'] = merged_df['No.SAPDENEGOCIO'].astype(str) + \
+                      merged_df['Mes_x'].astype(str) + \
+                      merged_df['Año_Comision'].astype(str)
+
+merged_df['Codigo_region_periodo'] = merged_df['REGION CORTA'].astype(str) + \
+                      merged_df['Mes_x'].astype(str) + \
+                      merged_df['Año_Comision'].astype(str)
+
+#calculo de promedio de total income, usando dos desviaciones standard me indica si existe una anomalia en el pago de la tienda
+def detectar_anomalias(df, columna_total_income="Total Income", columna_codigo="No.SAPDENEGOCIO"):
+    stats = df.groupby(columna_codigo)[columna_total_income].agg(["mean", "std"]).reset_index()
+    stats.rename(columns={"mean": "Media_Total_Income", "std": "Desviacion_Total_Income"}, inplace=True)
+    stats["Desviacion_Total_Income"] = stats["Desviacion_Total_Income"].fillna(0)
+
+    # Unimos las métricas al dataframe original
+    df = df.merge(stats, on=columna_codigo, how="left")
+
+    # Definimos la anomalía
+    df["Tiene_Anomalia"] = np.where(
+        (df[columna_total_income] < df["Media_Total_Income"] - 2 * df["Desviacion_Total_Income"]) &
+        (df["Desviacion_Total_Income"] > 0), 1, 0
+    )
+
+    return df  # Retornar el dataframe modificado
+
+# Aplicamos la función y reasignamos
+merged_df = detectar_anomalias(merged_df)
+
+#datos financieros
+
+# Crear las llaves con OP, REVENUE y Sell_out
+merged_df["Llave_OP"] = merged_df["REGION CORTA"].astype(str) + merged_df["Mes_x"].astype(str) + merged_df["Año_Comision"].astype(str) + "OP"
+merged_df["Llave_Revenue"] = merged_df["REGION CORTA"].astype(str) + merged_df["Mes_x"].astype(str) + merged_df["Año_Comision"].astype(str) + "Revenue"
+merged_df["Llave_Sell_out"] = merged_df["REGION CORTA"].astype(str) + merged_df["Mes_x"].astype(str) + merged_df["Año_Comision"].astype(str) + "Sell_out"
+
+
+# Hacer el merge con sa039 para cada tipo de dato
+merged_df['OP_Region_Mes'] = merged_df['Llave_OP'].map(diccionario_datos_finanzas)
+merged_df['Revenue_Region_Mes'] = merged_df['Llave_Revenue'].map(diccionario_datos_finanzas)
+merged_df['Sell_out_Region_Mes'] = merged_df['Llave_Sell_out'].map(diccionario_datos_finanzas)
+
+# Eliminar las columnas auxiliares de llave
+merged_df.drop(columns=["Llave_OP", "Llave_Revenue", "Llave_Sell_out"], inplace=True)
+
+#op sobre htl
+merged_df['OP_por_HTL'] = merged_df['OP_Region_Mes'] /merged_df['Sell_out_Region_Mes'] * merged_df['HTL']
+merged_df['GI/OP Margin'] = merged_df['OP_Region_Mes'] /merged_df['Revenue_Region_Mes']
+
+def asignar_quarter(mes):
+    if mes in [1, 2, 3]:
+        return 'Q1'
+    elif mes in [4, 5, 6]:
+        return 'Q2'
+    elif mes in [7, 8, 9]:
+        return 'Q3'
+    elif mes in [10, 11, 12]:
+        return 'Q4'
+    else:
+        return 'Mes inválido'
+merged_df['Quarter'] = merged_df['Mes_x'].apply(asignar_quarter)
+merged_df['Quarter_Year'] = merged_df['Quarter'] + merged_df['Año_Comision'].astype(str)
+
+def asignar_semester(mes):
+    if mes in [1, 2, 3, 4, 5, 6]:
+        return 'S1'
+    elif mes in [7, 8, 9,10, 11, 12]:
+        return 'S2'
+    else:
+        return 'Mes inválido'
+merged_df['Semester'] = merged_df['Mes_x'].apply(asignar_semester)
+merged_df['Semester_Year'] = merged_df['Semester'] + merged_df['Año_Comision'].astype(str)
+
+merged_df['Total_Income_Filter_10K'] = merged_df['Total Income'] >= 10000
+merged_df['Total_Income_Filter_<15K'] = merged_df['Total Income'] < 10000
+
+merged_df['Total_Income_Filter_10K_YTD'] = merged_df['Total Income'] >= 10000
+merged_df['Total_Income_Filter_<15K_YTD'] = merged_df['Total Income'] < 15000
+
+merged_df['Total_Income_Full_Filter_10K_YTD'] = merged_df['Total_Income_Full'] >= 10000
+merged_df['Total_Income_Full_Filter_<15K_YTD'] = merged_df['Total_Income_Full'] < 15000
+
+orden_columnas = [
+    "REGION", "ZONA", "PLAZA", "No.SAPDENEGOCIO", "NOMBRE DEL NEGOCIO", "NoDEPROVEEDOR", 
+    "NOMBRE DEL COMERCIANTE", "STATUS", "MODALIDAD", "TABULADOR", "SIX", "OCUPACIÓN", 
+    "FECHA", "DIA", "MES", "AÑO", "DIAS LABORADOS", "VENTA CERVEZA", "% COMISIÓN CERVEZA", 
+    "MONTO GARANTIZADO", "COMISIÓN CERVEZA", "COMPLEMENTO DE COMISION FIJA/VARIABLE", 
+    "CIGARROS", "TAE", "PAGO RTD'S", "STRONGBOW", "SPIRITS", "ENERGIZANTES", 
+    "SUEROS ORALES", "SIM CARDS", "ENCENDEDORES", "CANIJILLA", "ARTICULOS SIX", 
+    "FARMACIA G", "FARMACIA M", "AGUA", "ENERGY DRINKS", "SERVICIOS ELECTRONICOS", "URBANI y VA y VEN",
+    "INCENTIVO CATEGORIAS DIRECTAS", "INCENTIVO CATEGORIAS INDIRECTAS", 
+    "REDENCIONES LÁCTEOS", "REDENCIONES REFRESCOS", "REDENCIONES SNACK", 
+    "REDENCIONES HELADOS", "REDENCIONES CIGARROS", "BONO DE BIENVENIDA", "BONO CERVEZA", 
+    "BONO EJECUCIÓN", "INSTRUCTOR INDIRECTO", "APOYO TEMPORAL COMODIN", "INSTRUCTOR", 
+    "GARANTIAS (G)", "CIERRE TEMPORAL", "GENTE COMO TU", "INCENTIVO USO POS", 
+    "INCENTIVO GLUP", "APOYOS (VARIOS)", "CONCEPTO APOYO (VARIOS)", "ANTICIPOS", 
+    "PERCEPCION", "IVA", "INGRESO BRUTO", "IVA RET", "IMPUESTOS FEDERALES", 
+    "HONORARIOS CONTADOR", "IMSS", "TIMBRADO", "RESICO", "AJUSTE DE COMISIÓN", 
+    "GARANTÍA CONTABLE", "MULTAS", "DESCUENTO ENE ELEC", "PENALIZACIONES", "HIELO", 
+    "PRODUCTOS COMPLEMENTARIOS", "PENSIÓN ALIMENTICIA", "GARANTÍA", "ANTICIPO", 
+    "GASTOS FIJOS", "KIT DE SEGURIDAD", "USO POS", "MULTA NO VENTA A MENORES", 
+    "HIPOTECARIO", "AJUSTE DE COMISIONES ANTERIORES", "TOTAL DESCUENTOS", "PAGO ", 
+    "PROPUESTA DE PAGO", "DIF", "COMENTARIO", "FALTANTE", "BP+BR", "RETENCIÓN", 
+    "Solicitante", "Motivo", "Fecha", "Comentario", "Percepción Com DIC C1", 
+    "MONTO A GARANTIZAR (PERCEPCION - MONTO A GARANTIZAR)", "COMENTARIO.1", 
+    "MONTO GARANTIZADO.1", "Apoyo Anticipo", "ACLARACIONES", 
+    "COMPLEMENTO DE COMISION FIJA/VARIABLE.1", "Otros", "Total", "REGION.1", "RESICO.1", "Codigo_registro","Tiene_Anomalia",
+    #nuevas columnas
+    "MES ARCH","Año_Comision", "Quarter_Year", "Semester_Year","REGION CORTA", "Revenue", 
+    "HSK", "Garantizado","En Tiendas por Variabilizar", "En Tiendas por Desincorporar", "En Tiendas HSK","Territorio_Tipo","Cumple_Condiciones_Tienda_Activa","Com_Cerveza_De_Contrato", "Cumplimiento_Comision_Contrato","Porcentaje_de_hsk",
+    #pos
+    "CECO", "APERTURA", "CIERRE", "SUMAOTROS", "Aplica_Subsidio_Segun_POS", 
+    "Suma_APERTURA_CIERRE_SUMAOTROS", 
+    #meses
+    "Mes_x", "Conteo acumulado mes", "Meses_YTD", "Meses_Acumulado_Tienda_Proveedor_YTD",
+    #datos financieros
+    "OP_Region_Mes", "Revenue_Region_Mes", "Sell_out_Region_Mes","OP_por_HTL","GI/OP Margin",
+    #Agrupaciones de Total income
+    "Total_Income_Filter_10K", "Total_Income_Filter_<15K_YTD", "Total_Income_Filter_10K_YTD", "Total_Income_Filter_<15K_YTD","Total_Income_Full", "Total_Income_Promedio_YTD_Full",
+    #htl
+    "HTL","Grupo_HTL_Mes", "HTL_Promedio_YTD", "Grupo_HTL_YTD", "Grupo_Meses_YTD",
+    #comisionesim
+    "Comision_Directa","Comision_Directa_sin_cerveza","Indirectas", "Total Income", "Avg_Comision_Directa_YTD", "Avg_Comision_Indirecta_YTD", "MIX_Indirectas_Mes", 
+    #mix
+    "MIX_Indirectas_YTD", "Grupos_rango_MIX_Indirectas",
+    #desgloce montos
+    "OC_Directas_Mes","GEC_Mes","Redenciones_Mes", "Ayudas_y_bonos_Mes",    
+    #income
+    "Garantizado monto", "Grupo_De_Subsidio_Mes", "Total Income sin subsidio", "Subsidios",
+    "Total_Income_Promedio_YTD", "Total_Income_Sin_subsidio_Promedio_YTD", 
+    #subsidio
+    "Flag_Total_Income < 15000", 
+    "Conteo_acumulado_necesidad_de_subsidio", "rango_necesidad_subsidio", 
+    "Grupos_rango_necesidad_subsidio"
+]
+
+merged_df = merged_df[orden_columnas]
+merged_df['Nuevo_Total_Income_Propuesto'] = merged_df['Total Income sin subsidio'] + merged_df['Subsidios'] 
+merged_df['Nuevo_Total_Income_Propuesto_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Nuevo_Total_Income_Propuesto'].transform('mean')
+# Invertir el dataframe temporalmente
+reversed_df = merged_df[::-1]
+
+# Crear un diccionario que toma la primera ocurrencia al recorrer de abajo hacia arriba
+lookup_dict = reversed_df.drop_duplicates(subset='No.SAPDENEGOCIO', keep='first').set_index('No.SAPDENEGOCIO')['% COMISIÓN CERVEZA'].to_dict()
+
+# Aplicar el lookup a la nueva columna
+merged_df['% COM CERVEZA ACTUAL'] = merged_df['No.SAPDENEGOCIO'].map(lookup_dict)
+
+# Clasificar por tipo de Territorio
+conditions = [
+    ((merged_df['REGION'] == "NOROESTE") | (merged_df['ZONA'] == "NUEVO LEON") | 
+     ((merged_df['REGION'] == "NORESTE") & (merged_df['ZONA'] == "VERACRUZ"))),
+    ((merged_df['ZONA'].isin(["COAHUILA DURANGO", "TAMAULIPAS", "TAMAULIPAS SUR"])) |
+     (merged_df['REGION'].isin(["OCCIDENTE", "CENTRO"]))),
+    (merged_df['REGION'] == "SURESTE")
+]
+choices = ['Territorio A', 'Territorio B', 'Territorio C']
+
+# Asignar territorios a los registros
+merged_df['Territorio'] = np.select(conditions, choices, default=np.nan)
+
+merged_df['Espejo % COM CERVEZA ACTUAL'] = merged_df['% COM CERVEZA ACTUAL']  
+merged_df['Comisión_Cerveza con % COM CERVEZA ACTUAL'] = merged_df['VENTA CERVEZA'] * merged_df['Espejo % COM CERVEZA ACTUAL']
+
+merged_df['Nuevo_Total_Income con % COM CERVEZA ACTUAL'] = (
+        merged_df['Comisión_Cerveza con % COM CERVEZA ACTUAL']
+        + merged_df['OC_Directas_Mes']
+        + merged_df['GEC_Mes']
+        + merged_df['Redenciones_Mes']
+        + merged_df['Ayudas_y_bonos_Mes']
+        + merged_df['Indirectas']
+    )
+
+merged_df['Nuevo_Total_Income_con_COM_CERVEZA_ACTUAL_YTD'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Nuevo_Total_Income con % COM CERVEZA ACTUAL'].transform('mean')
+
+
+def find_cv_percentage(htl, Territorio, htl_table):
+    # Encontrar el índice del rango que corresponde
+    try:
+        # Obtener el índice del primer rango mayor o igual
+        index = htl_table[htl_table['RANGO HTL'] >= htl].index[0]
+        # Verificar si hay una fila anterior
+        if index > 0:
+            row = htl_table.iloc[index - 1]  # Fila anterior
+        else:
+            # Si no hay fila anterior, retornar un valor por defecto
+            row = htl_table.iloc[0]  # Primera fila como fallback
+    except IndexError:
+        # Si no se encuentra un índice correspondiente, usar la última fila como tope
+        row = htl_table.iloc[0]
+
+    # Devolver el valor según el tipo de Territorio
+    if Territorio == 'Territorio A':
+        return row['% CV PROP A']
+    elif Territorio == 'Territorio B':
+        return row['% CV PROP B']
+    elif Territorio == 'Territorio C':
+        return row['% CV PROP C']
+    else:
+        return np.nan
+
+# Asignar porcentajes según el territorio correspondiente
+merged_df['% CV PROP'] = merged_df.apply(
+    lambda row: find_cv_percentage(
+        row['HTL_Promedio_YTD'],
+        row['Territorio'],
+        tabla_hectolitraje  # Nombre del DataFrame que contiene "Tabla de Hectolitraje"
+    ), axis=1
+)
+merged_df['Comisión_Cerveza_Prop'] = merged_df['VENTA CERVEZA'] * merged_df['% CV PROP']
+
+merged_df['Nuevo_Total_Income_Prop'] = (
+        merged_df['Comisión_Cerveza_Prop']
+        + merged_df['OC_Directas_Mes']
+        + merged_df['GEC_Mes']
+        + merged_df['Redenciones_Mes']
+        + merged_df['Ayudas_y_bonos_Mes']
+        + merged_df['Indirectas']
+    )
+
+merged_df['Nuevo_Total_Income_Prop'] = merged_df.groupby(['No.SAPDENEGOCIO'])['Nuevo_Total_Income_Prop'].transform('mean')
+
+# Lista de valores únicos de '% CV PROP A' del dataframe
+percentage_cv_prop_a = tabla_hectolitraje['% CV PROP A'].unique().tolist()
+# Redondear cada valor de la lista a 3 decimales
+percentage_cv_prop_a = [round(value, 3) for value in percentage_cv_prop_a]
+
+# Lista de valores únicos de '% CV PROP B' del dataframe
+percentage_cv_prop_b = tabla_hectolitraje['% CV PROP B'].unique().tolist()
+# Redondear cada valor de la lista a 3 decimales
+percentage_cv_prop_b = [round(value, 3) for value in percentage_cv_prop_b]
+
+# Lista de valores únicos de '% CV PROP C' del dataframe
+percentage_cv_prop_c = tabla_hectolitraje['% CV PROP C'].unique().tolist()
+
+# Redondear cada valor de la lista a 3 decimales
+percentage_cv_prop_c = [round(value, 3) for value in percentage_cv_prop_c]
+
+# Función para obtener el primer, siguiente valor en la lista según el territorio
+def get_next_steps(value, territory, steps=18):
+    # Seleccionar la lista de porcentaje según el territorio
+    if territory == 'Territorio A':
+        percentage_list = percentage_cv_prop_a
+    elif territory == 'Territorio B':
+        percentage_list = percentage_cv_prop_b
+    elif territory == 'Territorio C':
+        percentage_list = percentage_cv_prop_c
+    else:
+        # Si el territorio no coincide, devolver el mismo valor repetido
+        return [value] * steps
+
+    # Ordenar la lista por si no está previamente ordenada
+    percentage_list = sorted(percentage_list)
+    
+    # Encontrar los valores siguientes
+    escalones = []
+    for _ in range(steps):
+        next_value = min((x for x in percentage_list if x > value), default=percentage_list[-1])
+        escalones.append(next_value)
+        value = next_value  # Actualizar el valor para el siguiente escalón
+
+    return escalones
+
+# Crear las nuevas columnas dinámicamente con un loop
+for i in range(1, 18):  # Generar escalones del 1 al 4
+    merged_df[f'% Com cerveza + escalón {i}'] = merged_df.apply(
+        lambda row: get_next_steps(row['% COM CERVEZA ACTUAL'], row['Territorio'])[i-1],
+        axis=1
+    )
+
+
+#columnas que no son ingreso cheve 
+# Calcular la nueva comisión de cerveza
+# Iterar sobre los escalones (1 a 4)
+for i in range(1, 18):
+    # Calcular la comisión de cerveza para cada escalón
+    merged_df[f'Nueva Comisión Cerveza {i}'] = merged_df['VENTA CERVEZA'] * merged_df[f'% Com cerveza + escalón {i}']
+
+    # Calcular el total mensual para cada escalón
+    merged_df[f'Nuevo Total Income {i}'] = (
+        merged_df[f'Nueva Comisión Cerveza {i}']
+        + merged_df['OC_Directas_Mes']
+        + merged_df['GEC_Mes']
+        + merged_df['Redenciones_Mes']
+        + merged_df['Ayudas_y_bonos_Mes']
+        + merged_df['Indirectas']
+    )
+
+    # Calcular el promedio acumulado YTD para cada escalón
+    merged_df[f'Nuevo Total Income YTD {i}'] = merged_df.groupby(['No.SAPDENEGOCIO'])[f'Nuevo Total Income {i}'].transform('mean')
+
+sueldo_digno = 15000  # Definir el umbral de ingreso
+
+def evaluar_total_income(row):
+    if row['Total_Income_Sin_subsidio_Promedio_YTD'] >= sueldo_digno:
+        return f"Ya tiene sueldo digno"  # Mensaje si ya cumple
+        #return f"Ya tiene sueldo digno {row['Total_Income_Sin_subsidio_Promedio_YTD']} MXN"  # Mensaje si ya cumple
+    
+    elif row['Comisión_Cerveza con % COM CERVEZA ACTUAL']  >= sueldo_digno:
+        return f"Ya obtendrá sueldo digno con su comision actual (cambio de com durante el año)"  # Mensaje si ya cumple
+    else:
+        # Lista de columnas a evaluar
+        columnas_income = [col for col in row.index if col.startswith('Nuevo Total Income YTD')]
+        for columna in columnas_income:
+            if row[columna] >= sueldo_digno:
+                return columna  # Retornar el nombre de la primera columna que cumpla
+        return "No alcanza el umbral con ningún ingreso proyectado"  # Si ninguna cumple, mensaje específico
+
+# Aplicar la función al DataFrame y crear una nueva columna
+merged_df['Evaluacion_Income'] = merged_df.apply(evaluar_total_income, axis=1)
+
+def calcular_porcentaje(row):
+    # Verifica si 'Evaluacion_Income' contiene "Nuevo Total Income YTD"
+    if isinstance(row['Evaluacion_Income'], str) and "Nuevo Total Income YTD" in row['Evaluacion_Income']:
+        # Extrae el número del texto (asume que está separado por un espacio y es el último elemento)
+        try:
+            numero = int(row['Evaluacion_Income'].split()[-1])
+            columna_objetivo = f"% Com cerveza + escalón {numero}"  # Construye el nombre de la columna
+            return row[columna_objetivo] if columna_objetivo in row else None
+        except (ValueError, IndexError):
+            return None  # En caso de error al extraer el número
+    else:
+        # Si no contiene "Nuevo Total Income YTD", copia el valor de 'Evaluacion_Income'
+        return row['% COM CERVEZA ACTUAL']
+
+# Crea la nueva columna 'Porcentaje por sistema'
+merged_df['Porcentaje por sistema'] = merged_df.apply(calcular_porcentaje, axis=1)
+
+def calcular_algoritmo_vs_actual(row):
+    try:
+        # Intenta realizar la resta entre los valores numéricos
+        return row['Porcentaje por sistema'] - row['Espejo % COM CERVEZA ACTUAL']
+    except Exception:
+        # Si ocurre un error, devuelve el valor de 'Porcentaje por sistema'
+        return row['Porcentaje por sistema']
+
+# Aplica la función fila por fila
+merged_df['Algoritmo vs % Actual'] = merged_df.apply(calcular_algoritmo_vs_actual, axis=1)
+
+def calcular_algoritmo_vs_prop(row):
+    try:
+        # Intenta realizar la resta entre los valores numéricos
+        return row['Porcentaje por sistema'] - row['% CV PROP']
+    except Exception:
+        # Si ocurre un error, devuelve el valor de 'Porcentaje por sistema'
+        return row['Porcentaje por sistema']
+
+# Aplica la función fila por fila
+merged_df['Algoritmo vs % Prop'] = merged_df.apply(calcular_algoritmo_vs_actual, axis=1)
+
+merged_df.to_excel('base comisiones 2024.xlsx', index = False)
+
+def seleccionar_totalincome(row):
+    # Verifica si 'Evaluacion_Income' contiene "Nuevo Total Income YTD"
+    if isinstance(row['Evaluacion_Income'], str) and "Nuevo Total Income YTD" in row['Evaluacion_Income']:
+        # Extrae el número del texto (asume que está separado por un espacio y es el último elemento)
+        try:
+            numero = int(row['Evaluacion_Income'].split()[-1])  # Extrae el número del final del texto
+            columna_objetivo = f"Nuevo Total Income YTD {numero}"  # Construye el nombre de la columna
+            return row[columna_objetivo] if columna_objetivo in row else None
+        except (ValueError, IndexError):
+            return None  # En caso de error al extraer el número
+    else:
+        # Verifica condiciones específicas en 'Evaluacion_Income'
+        if row['Evaluacion_Income'] == 'Ya tiene sueldo digno':
+            return row['Total_Income_Sin_subsidio_Promedio_YTD']
+        elif row['Evaluacion_Income'] == 'Ya obtendrá sueldo digno con su comision actual (cambio de com durante el año)':
+            return row['Nuevo_Total_Income_Prop']
+        elif row['Evaluacion_Income'] == 'No alcanza el umbral con ningún ingreso proyectado':
+            return 0
+        else:
+            return row['Evaluacion_Income']  # Retorna el valor de 'Evaluacion_Income' si no cumple las condiciones anteriores
+
+# Crea la nueva columna 'Porcentaje por sistema'
+merged_df['Total_income_por_Algoritmo'] = merged_df.apply(seleccionar_totalincome, axis=1)
+
+merged_df['Algoritmo vs TI Actual'] = merged_df['Total_income_por_Algoritmo'] - merged_df['Total_Income_Sin_subsidio_Promedio_YTD']
+
+merged_df['Algoritmo vs TI Prop'] = merged_df['Total_income_por_Algoritmo'] - merged_df['Nuevo_Total_Income_Prop']
+
+merged_df.to_excel('base2024.xlsx', index = False)
+# Paso 1: Calcular Q1, Q3, IQR, límite inferior y límite superior con factor dinámico
+def agregar_metricas_outliers(group):
+    Q1 = group['Total Income sin subsidio'].quantile(0.25)
+    Q3 = group['Total Income sin subsidio'].quantile(0.75)
+    IQR = Q3 - Q1
+    
+    # Calcular el coeficiente de variación (CV)
+    mean = group['Total Income sin subsidio'].mean()
+    std_dev = group['Total Income sin subsidio'].std()
+    CV = std_dev / mean if mean != 0 else 0
+        
+    # if CV < 0.1:  # Variabilidad baja (ventas consistentes)
+    #     factor = 3.0  # Permitir más margen
+    # elif CV < 0.25:  # Variabilidad moderada
+    #     factor = 2.0
+    if CV < 0.35:  # Variabilidad moderada
+        factor = 1.5        
+    else:  # Variabilidad alta (ventas muy inestables)
+        factor = 1.2  # Ser más estricto con los outliers
+
+    # Calcular los límites dinámicos
+    limite_inferior = Q1 - factor * IQR
+    limite_superior = Q3 + factor * IQR
+    
+    # Agregar las columnas con las métricas calculadas
+    group['Q1'] = Q1
+    group['Q3'] = Q3
+    group['IQR'] = IQR
+    group['Limite_Inferior'] = limite_inferior
+    group['Limite_Superior'] = limite_superior
+    group['Factor_Aplicado'] = factor
+    group['CV'] = CV
+    # Crear la columna 'Outlier' indicando si el valor está fuera de los límites
+    group['Outlier'] = np.where(
+        (group['Total Income sin subsidio'] < limite_inferior) | 
+        (group['Total Income sin subsidio'] > limite_superior), 
+        'Fuera de rango', 
+        'Normal'
+    )
+    
+    return group
+
+# Aplicar la función de agregación de métricas por cada tienda (o cualquier agrupación que necesites)
+merged_df = merged_df.groupby('No.SAPDENEGOCIO').apply(agregar_metricas_outliers).reset_index(drop=True)
+
+# Filtrar valores dentro del rango normal
+df_sin_outliers = merged_df[merged_df['Outlier'] == 'Normal']
+
+# Paso 2: Calcular el promedio de ventas por tienda sin outliers
+promedios_sin_outliers = df_sin_outliers.groupby('No.SAPDENEGOCIO')['Total Income sin subsidio'].mean().reset_index()
+promedios_sin_outliers.rename(columns={'Total Income sin subsidio': 'Promedio_sin_outliers'}, inplace=True)
+
+# Unir el dataframe de promedios con el original
+merged_df = pd.merge(merged_df, promedios_sin_outliers, on='No.SAPDENEGOCIO', how='left')
+merged_df['CV'] = merged_df['CV'].fillna(0)
+# Guardar el DataFrame combinado en un archivo Excel
+merged_df.to_excel(f"12. Base_Final_Comisiones_{año_a_evaluar}_Ultimate_final_outlandders.xlsx", index=False)
+
+
+# merged_df_solo_Activas = merged_df[merged_df['Cumple_Condiciones_Tienda_Activa']].reset_index(drop=True)
+
+# for region in merged_df_solo_Activas['REGION'].unique():
+#     # Filtrar el DataFrame por la región actual
+#     df_filtrado = merged_df_solo_Activas[merged_df_solo_Activas['REGION'] == region]
+    
+#     # Definir el nombre del archivo con el valor de la región
+#     nombre_archivo = f"Base_de_comisiones {region} {año_a_evaluar} clean.xlsx"
+    
+#     # Exportar a Excel
+#     df_filtrado.to_excel(nombre_archivo, index=False)
+
+
+# #hsk ola 3
+# encabezados_nuevas_olas = [
+#     "REGION", 
+#     "ZONA", 
+#     "PLAZA", 
+#     "No.SAPDENEGOCIO", 
+#     "NOMBRE DEL NEGOCIO", 
+#     "Territorio", 
+#     "HSK", 
+#     "En Tiendas por Desincorporar", 
+#     "Grupos_rango_necesidad_subsidio", 
+#     "HTL_Promedio_YTD", 
+#     "Grupo_HTL_YTD", 
+#     "Espejo % COM CERVEZA ACTUAL", 
+#     "Total_Income_Sin_subsidio_Promedio_YTD",
+#     "Nuevo_Total_Income_con_COM_CERVEZA_ACTUAL_YTD",
+#     "% CV PROP", 
+#     "Nuevo_Total_Income_Prop", 
+#     "Porcentaje por sistema", 
+#     "Total_income_por_Algoritmo", 
+# ]
+
+# candidatos_ola3 =  merged_df[merged_df['Total_Income_Sin_subsidio_Promedio_YTD'] < 18000]
+# candidatos_ola3 = candidatos_ola3[encabezados_nuevas_olas]
+#candidatos_ola3.to_excel('Candidatos_Ola3_HSK.xlsx', index = False)
+#base_comisiones.columns
+print("Archivo Excel guardado éxitosamente")
+# Fin de medición
+end_time = time.time()
+
+# Tiempo transcurrido
+elapsed_time = end_time - start_time
+minutes, seconds = divmod(elapsed_time, 60)
+print(f"El código tardó {int(minutes)} minutos y {seconds:.2f} segundos en ejecutarse.")
+
+print("El código está corriendo...")
+time.sleep(5)  # Simula un retraso (por ejemplo, 5 segundos)
+
+# Reproduce un sonido al finalizar (frecuencia de 1000 Hz, duración de 1000 ms)
+#winsound.Beep(1000, 1000)  # 1000 Hz, 1000 ms de duración
+print("El código ha terminado.")  
+
+# # Crear un nuevo DataFrame aplicando el filtro
+# base_subsidios_propuesta = merged_df[
+#     (merged_df['Subsidios'] > 0) & 
+#     (merged_df['En Tiendas por Variabilizar'] == 0) & 
+#     (merged_df['En Tiendas por Desincorporar'] == 0) & 
+#     (merged_df['En Tiendas HSK'] == 0) & 
+#     ((merged_df['STATUS'] == 'ACTIVOS') | (merged_df['STATUS'] == 'ALTA')) & 
+#     (merged_df['MODALIDAD'] != 'PENSION') & 
+#     (merged_df['SIX'] != 'INDIRECTO') & 
+#     (merged_df['OCUPACIÓN'] == 'TOTAL') & 
+#     (merged_df['DIAS LABORADOS'] > 28)
+# ].copy()
+# base_subsidios_propuesta.to_excel('Base_sin_relleno_final_comisiones_oct_ind_sin_ceros_HSK_TOTAL.xlsx', index = False)
+
+# base_garantia_g = merged_df[
+#     (merged_df['GARANTIAS (G)'] > 0)
+# ].copy()
+# merged_df.to_excel('Base_garantia_g_final_comisiones_finalisimo_sin_ceros_HSK_TOTAL.xlsx', index = False)
+
+
+# Inicializar pygame
+pygame.init()
+
+# Ruta del archivo de audio
+audio_file = r'C:\Users\dominh05\Documents\My project (37).wav'
+
+# Verificar si el archivo existe
+if not os.path.exists(audio_file):
+    print(f"El archivo '{audio_file}' no existe.")
+else:
+    # Reproducir el archivo de audio
+    pygame.mixer.music.load(audio_file)
+    pygame.mixer.music.play()
+
+    # Esperar hasta que la música termine de reproducirse
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(10)
+
+# Terminar pygame
+pygame.quit()
